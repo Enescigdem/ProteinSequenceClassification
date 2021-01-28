@@ -1,0 +1,273 @@
+# Import Libraries
+import torch
+import torch.nn as nn
+import copy
+from torch.autograd import Variable
+from sklearn.model_selection import train_test_split
+from torch.utils.data import DataLoader, TensorDataset
+from sklearn.metrics import classification_report
+import itertools
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.feature_extraction.text import CountVectorizer
+
+import seaborn as sns
+import os
+import sys
+
+
+def plot_confusion_matrix(cm, classes,
+                          cmap=plt.cm.Blues):
+    plt.imshow(cm, interpolation='nearest', cmap=cmap)
+    plt.colorbar()
+    tick_marks = np.arange(len(classes))
+    plt.xticks(tick_marks, classes, rotation=45)
+    plt.yticks(tick_marks, classes)
+
+    threshold = cm.max() / 2.
+    for i, j in itertools.product(range(cm.shape[0]), range(cm.shape[1])):
+        plt.text(j, i, format(cm[i, j]), horizontalalignment="center",
+                 color="white" if cm[i, j] > threshold else "black")
+
+    plt.ylabel('True label')
+    plt.xlabel('Predicted label')
+
+
+def plot_graph(plotlist1, plotlist2, ylabel):
+    # Plot accuracy graph
+    plt.xlabel("Training Epochs")
+    plt.ylabel(ylabel)
+    plt.plot(plotlist1, color="green")
+    plt.plot(plotlist2, color="red")
+
+    plt.gca().legend(('Train', 'Validation'))
+    plt.show()
+
+
+# Prepare Dataset
+# load data
+
+dataset_path = r"/content/drive/MyDrive/411Proje/input/17deneme350_400.csv"
+train = pd.read_csv(dataset_path, dtype=np.float32)
+
+targets_numpy = train.Type.values
+
+features_numpy = train.loc[:, train.columns != "Type"].values
+
+features_train, features_test, targets_train, targets_test = train_test_split(features_numpy, targets_numpy,
+                                                                              test_size=0.30, random_state=1)
+
+features_test, test_test, targets_test, test_test_y = train_test_split(features_test, targets_test,
+                                                                       test_size=0.15 / (0.15 + 0.15), random_state=1)
+
+featuresTrain = torch.from_numpy(features_train)
+targetsTrain = torch.from_numpy(targets_train).type(torch.LongTensor)
+
+featuresTest = torch.from_numpy(features_test)
+targetsTest = torch.from_numpy(targets_test).type(torch.LongTensor)
+
+batch_size = 10
+###TEST
+testtest = torch.from_numpy(test_test)
+test_y = torch.from_numpy(test_test_y)
+
+# Pytorch train and test sets
+train = TensorDataset(featuresTrain, targetsTrain)
+val = TensorDataset(featuresTest, targetsTest)
+test = TensorDataset(testtest, test_y)
+# data loader
+
+train_loader = DataLoader(train, batch_size=batch_size, shuffle=True)
+val_loader = DataLoader(val, batch_size=batch_size, shuffle=True)
+test_loader = DataLoader(test, batch_size=batch_size, shuffle=True)
+
+
+# Create RNN Model
+
+class RNNModel(nn.Module):
+    def __init__(self, input_dim, hidden_dim, layer_dim, output_dim):
+        super(RNNModel, self).__init__()
+
+        # Number of hidden dimensions
+        self.hidden_dim = hidden_dim
+
+        # Number of hidden layers
+        self.layer_dim = layer_dim
+
+        # RNN
+        self.rnn = nn.RNN(input_dim, hidden_dim, layer_dim, batch_first=True, nonlinearity='relu')
+
+        # Readout layer
+        self.fc = nn.Linear(hidden_dim, output_dim)
+
+    def forward(self, x):
+        # Initialize hidden state with zeros
+        h0 = Variable(torch.zeros(self.layer_dim, x.size(0), self.hidden_dim))
+
+        # One time step
+        out, hn = self.rnn(x, h0)
+        out = self.fc(out[:, -1, :])
+        return out
+
+
+# batch_size, epoch and iteration
+batch_size = 10
+
+# Create RNN
+input_dim = 20  # input dimension
+hidden_dim = 100  # hidden layer dimension
+layer_dim = 1  # number of hidden layers
+output_dim = len(list(set(list(targets_numpy))))  # output dimension
+seq_dim = 20
+model = RNNModel(input_dim, hidden_dim, layer_dim, output_dim)
+
+# Cross Entropy Loss 
+error = nn.CrossEntropyLoss()
+
+# SGD Optimizer
+learning_rate = 0.001
+optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=0.005)
+
+datasetloaders = {'train': train_loader, 'val': val_loader, 'test': test_loader}
+
+print(len(train))
+print(len(val))
+print(len(test))
+dataset_sizes = {'train': len(train), 'val': len(val), 'test': len(test)}
+
+
+def networktrain(mmodel, criterion, optimizer, dataloaders, epoch_number, device, dataset_sizes):
+    mmodel.to(device)
+    best_model_wts = copy.deepcopy(mmodel.state_dict())
+    best_train_loss = np.Inf
+    best_train_acc = 0.0
+    best_val_acc = 0.0
+    train_loss_history = list()
+    best_val_loss = np.Inf
+    val_loss_history = list()
+
+    for epoch in range(epoch_number):
+        print('Epoch {}/{}'.format(epoch, epoch_number - 1))
+        # Each epoch has a training and validation phase
+        for part in ['train', 'val']:
+            current_loss = 0.0
+            if part == 'train':
+                mmodel.train()
+            else:
+                mmodel.eval()
+            current_phase_correct_outputnumber = 0
+            current_loss = 0.0
+            # For each phase in datasets are iterated
+            for inputs, outputs in dataloaders[part]:
+
+                inputs = Variable(inputs.view(-1, seq_dim, input_dim))
+                outputs = Variable(outputs)
+
+                inputs = inputs.to(device)
+                outputs = outputs.to(device)
+
+                preds = mmodel(inputs)
+
+                # zero the parameter gradients
+                optimizer.zero_grad()
+                # forward
+                loss = criterion(preds, outputs)
+
+                # Backpropagate and opitimize Training part
+                if part == 'train':
+                    loss.backward()
+                    optimizer.step()
+                # statistics
+                current_loss += loss.item() * inputs.size(0)
+                current_phase_correct_outputnumber += torch.sum(torch.max(preds.data, 1)[1] == outputs.data)
+            current_loss = current_loss / dataset_sizes[part]
+            epoch_acc = 100 * current_phase_correct_outputnumber.double() / dataset_sizes[part]
+
+            if part == 'val':
+                val_loss_history.append(current_loss)
+            else:
+                train_loss_history.append(current_loss)
+
+            print('{} Loss: {:.4f} : '.format(
+                part, current_loss))
+
+            # deep copy the model
+            if part == 'train' and current_loss < best_train_loss:
+                best_train_loss = current_loss
+
+            if part == 'val' and current_loss < best_val_loss:
+                best_val_loss = current_loss
+            if part == 'val' and epoch_acc > best_val_acc:
+                best_val_acc = epoch_acc
+                best_model_wts = copy.deepcopy(mmodel.state_dict())
+
+        print('{} Loss: {:.4f} Acc: {:.4f}'.format(
+            part, current_loss, epoch_acc))
+
+    # load best model weights
+    mmodel.load_state_dict(best_model_wts)
+    # Plot accuracy graph
+
+    plot_graph(train_loss_history, val_loss_history, "Loss")
+    return mmodel
+
+
+trained = networktrain(model, error, optimizer, datasetloaders, 20, "cpu", dataset_sizes)
+
+
+y_test = []
+for i in datasetloaders["test"]:
+    y_test.extend(i[1].tolist())
+
+
+def calculateTestAcc(trained_model, dataloaders, dataset_sizes, classes):
+    class_names = classes
+    device = "cpu"
+    confusion_matrixx = torch.zeros(len(classes), len(classes))
+    np.set_printoptions(precision=2)
+    current_phase_correct_outputnumber = 0
+    topk = 0
+    y_preds = []
+    with torch.no_grad():
+        for i, (inputs, classes) in enumerate(dataloaders['test']):
+            inputs = Variable(inputs.view(-1, seq_dim, input_dim))
+            classes = Variable(classes)
+            inputs = inputs.to(device)
+            classes = classes.to(device)
+
+            outputs = trained_model(inputs)
+            preds = torch.max(outputs.data, 1)[1]
+
+            y_preds.extend(preds.tolist())
+            current_phase_correct_outputnumber += torch.sum(preds == classes.data)
+            for t, p in zip(classes.view(-1), preds.view(-1)):
+                confusion_matrixx[t.long(), p.long()] += 1
+
+        #### Top 1 score
+        test_acc = 100 * current_phase_correct_outputnumber.double() / dataset_sizes['test']
+
+        # Top 1 and Top 5 accuracies printed
+        print('Test Acc: {:4f}'.format(test_acc))
+
+    # Plot size is set
+    plt.figure(figsize=(4 * len(classes), 4 * len(classes)))
+    plot_confusion_matrix(confusion_matrixx, classes=class_names)
+
+    plt.show()
+    conf_mat = confusion_matrixx.detach().numpy()
+    conf_mat = conf_mat.astype('float') / conf_mat.sum(axis=1)[:, np.newaxis]
+
+    # Plot Heat Map
+    fig, ax = plt.subplots()
+    fig.set_size_inches(13, 8)
+    sns.heatmap(conf_mat, )
+    print("-------", end=" ")
+    print(classification_report(y_preds, y_test, target_names=class_names))
+
+
+myclasses = ['OXIDOREDUCTASE', 'TRANSFERASE', 'HYDROLASE', 'LYASE', 'ISOMERASE',
+             'PROTEIN BINDING', 'LIGASE', 'VIRAL PROTEIN', 'STRUCTURAL PROTEIN', 'HYDROLASE/HYDROLASE INHIBITOR',
+             'SIGNALING PROTEIN', 'VIRUS', 'TRANSCRIPTION',
+             'MEMBRANE PROTEIN', 'IMMUNE SYSTEM', 'TRANSPORT PROTEIN', 'CHAPERONE']
+calculateTestAcc(trained, datasetloaders, dataset_sizes, myclasses)
